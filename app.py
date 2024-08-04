@@ -9,13 +9,16 @@ import aiohttp
 import os
 import sys
 
-from pipecat.frames.frames import EndFrame, LLMMessagesFrame
+from pipecat.frames.frames import LLMMessagesFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
-from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_response import (
+    LLMAssistantResponseAggregator, LLMUserResponseAggregator)
 from pipecat.services.elevenlabs import ElevenLabsTTSService
 from pipecat.services.openai import OpenAILLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
+from pipecat.vad.silero import SileroVADAnalyzer
 
 from runner import configure
 from loguru import logger
@@ -28,13 +31,19 @@ logger.add(sys.stderr, level="DEBUG")
 
 async def main():
     async with aiohttp.ClientSession() as session:
-        (room_url, _) = await configure(session)
+        (room_url, token) = await configure(session)
 
         transport = DailyTransport(
             room_url,
-            None,
-            "Say One Thing From an LLM",
-            DailyParams(audio_out_enabled=True))
+            token,
+            "Respond Bot",
+            DailyParams(
+                audio_out_enabled=True,
+                transcription_enabled=True,
+                vad_enabled=True,
+                vad_analyzer=SileroVADAnalyzer()
+            )
+        )
 
         tts = ElevenLabsTTSService(
             aiohttp_session=session,
@@ -50,14 +59,32 @@ async def main():
 
         messages = [{
             "role": "system",
-            "content": "You are an LLM in a WebRTC session, and this is a 'hello world' demo. Say hello to the world."
+            "content": "You are a helpful LLM in a WebRTC call. Your goal is to demonstrate your capabilities in a succinct way. Your output will be converted to audio so don't include special characters in your answers. Respond to what the user said in a creative and helpful way."
         }]
 
-        task = PipelineTask(Pipeline([llm, tts, transport.output()]))
+        tma_in = LLMUserResponseAggregator(messages)
+        tma_out = LLMAssistantResponseAggregator(messages)
+
+        pipeline = Pipeline([
+            transport.input(),   # Transport user input
+            tma_in,              # User responses
+            llm,                 # LLM
+            tts,                 # TTS
+            transport.output(),  # Transport bot output
+            tma_out              # Assistant spoken responses
+        ])
+
+        task = PipelineTask(pipeline, PipelineParams(
+            allow_interruptions=True,
+            enable_metrics=True,
+            report_only_initial_ttfb=True
+        ))
 
         @transport.event_handler("on_first_participant_joined")
         async def on_first_participant_joined(transport, participant):
-            await task.queue_frames([LLMMessagesFrame(messages), EndFrame()])
+            transport.capture_participant_transcription(participant["id"])
+            messages.append({"role": "system", "content": "Please introduce yourself to the user."})
+            await task.queue_frames([LLMMessagesFrame(messages)])
 
         runner = PipelineRunner()
 
