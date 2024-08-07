@@ -4,15 +4,16 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-import aiohttp
-import os
 import argparse
+import atexit
+import os
 import subprocess
+import time
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse
-from pipecat.transports.services.helpers.daily_rest import DailyRESTHelper, DailyRoomParams
+from pipecat.transports.services.helpers.daily_rest import DailyRESTHelper, DailyRoomParams, DailyRoomProperties
 
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -24,8 +25,6 @@ MAX_BOTS_PER_ROOM = 1
 # Bot sub-process dict for status reporting and concurrency control
 bot_procs = {}
 
-daily_helpers = {}
-
 def cleanup():
     # Clean up function, just to be extra safe
     for entry in bot_procs.values():
@@ -33,21 +32,9 @@ def cleanup():
         proc.terminate()
         proc.wait()
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    aiohttp_session = aiohttp.ClientSession()
+atexit.register(cleanup)
 
-    daily_helpers["rest"] = DailyRESTHelper(
-        daily_api_key=os.getenv("DAILY_API_KEY", ""),
-        daily_api_url=os.getenv("DAILY_API_URL", 'https://api.daily.co/v1')
-    )
-
-    yield
-    await aiohttp_session.close()
-
-    cleanup()
-
-app = FastAPI(lifespan=lifespan)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,10 +45,14 @@ app.add_middleware(
 )
 
 @app.get("/start")
-async def start_agent(request: Request):
-    print(f"!!! Creating room")
-    room = daily_helpers["rest"].create_room(DailyRoomParams())
-    print(f"!!! Room URL: {room.url}")
+async def start_agent():
+    daily_rest_helper = DailyRESTHelper(
+        daily_api_key=os.getenv("DAILY_API_KEY", ""),
+        daily_api_url=os.getenv("DAILY_API_URL", 'https://api.daily.co/v1')
+    )
+
+    expiration = time.time() + 5 * 60
+    room = daily_rest_helper.create_room(DailyRoomParams(properties=DailyRoomProperties(exp=expiration)))
 
     # Ensure the room property is present
     if not room.url:
@@ -78,7 +69,7 @@ async def start_agent(request: Request):
             status_code=500, detail=f"Max bot limited reach for room: {room.url}")
 
     # Get the token for the room
-    token = daily_helpers["rest"].get_token(room.url)
+    token = daily_rest_helper.get_token(room.url)
 
     if not token:
         raise HTTPException(
