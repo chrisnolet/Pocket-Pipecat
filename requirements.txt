@@ -1,0 +1,5 @@
+fastapi[all]
+uvicorn
+pipecat-ai[daily,openai,silero]
+python-dotenv
+requests

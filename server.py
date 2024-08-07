@@ -126,7 +126,7 @@ def get_status(pid: int):
 if __name__ == "__main__":
     import uvicorn
 
-    default_host = os.getenv("HOST", "127.0.0.1")
+    default_host = os.getenv("HOST", "0.0.0.0")
     default_port = int(os.getenv("PORT", "8000"))
 
     parser = argparse.ArgumentParser(description="Daily Storyteller FastAPI server")
